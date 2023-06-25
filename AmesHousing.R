@@ -167,4 +167,38 @@ vis_miss(ames_recipe, cluster = TRUE)
 
 
 # Feature filtering
+# zero and near-zero variables - single unique value with no useful info to a model
+# fraction of unique values =<10%
+# ratio of freq. of the most prevalent value to the 2nd freq. of the 2nd most prevalent
+# value => 20%
+
+caret::nearZeroVar(ames_train, saveMetrics = TRUE) %>% 
+  rownames_to_column() %>% 
+  filter(nzv)
+
+# numeric featuer engineering
+# skewness
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
