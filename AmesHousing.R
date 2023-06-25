@@ -5,6 +5,7 @@
 # – objective: use property attributes to predict the sale price of a home
 # – access: provided by the AmesHousing package (Kuhn, 2017a)
 # – more details: See ?AmesHousing::ames_raw
+
 library(tidyverse)
 library(AmesHousing)
 library(h2o)
@@ -176,21 +177,74 @@ caret::nearZeroVar(ames_train, saveMetrics = TRUE) %>%
   rownames_to_column() %>% 
   filter(nzv)
 
-# numeric featuer engineering
-# skewness
+# Numeric feature engineering
+# skewness: when normalizing, use Box-Cox when feature values - strictly positive
+# use Yeo-Johnson when feature values - not strictly positive
+
+# normalize all numeric columns
+recipe(Sale_Price ~ ., data = ames_train) %>% 
+  step_YeoJohnson(all_numeric())
+
+# standardization
+# centering and scaling - numeric variables have zero mean and unit variance
+# better standardize within recipe blueprint so that both training and test data
+# standardization are based on the same mean and variance
+
+ames_recipe %>% 
+  step_center(all_numeric(), -all_outcomes()) %>% 
+  step_scale(all_numeric(), -all_outcomes())
 
 
+# categorical feature engineering
+# Lumping
+# contains levels that have very few observations
+count(ames_train, Neighborhood) %>% arrange(n)
 
+count(ames_train, Screen_Porch) %>% arrange(n)
 
+# lump levels for two features
+lumping <- recipe(Sale_Price ~ ., data = ames_train) %>% 
+  step_other(Neighborhood, threshold = 0.01, other = "other") %>% 
+  step_other(Screen_Porch, threshold = 0.01, other = ">0")
 
+apply_2_training <- prep(lumping, training = ames_train) %>% 
+  bake(ames_train)
 
+# New distributions
+count(apply_2_training, Neighborhood) %>% arrange(n)
+count(apply_2_training, Screen_Porch) %>% arrange(n)
 
+# one-hot and dummy encoding
+# lump levels for two features, it creates perfect collinearity which bad for prediction
+recipe(Sale_Price ~ ., data = ames_train) %>% 
+  step_dummy(all_nominal(), one_hot = TRUE)
 
+# label encoding
+# Original categories
+count(ames_train, MS_SubClass)
+# Label encoded
+recipe(Sale_Price ~ ., data = ames_train) %>% 
+  step_integer(MS_SubClass) %>% 
+  prep(ames_train) %>% 
+  bake(ames_train) %>% 
+  count(MS_SubClass)
 
+# be careful with unordered categorical features
+# ordinal encoding is Ames housing
 
+ames_train %>% select(contains("Qual"))
 
+# ordered factors check
+count(ames_train, Overall_Qual)
 
+# Label encoded
+recipe(Sale_Price ~ ., data = ames_train) %>% 
+  step_integer(Overall_Qual) %>% 
+  prep(ames_train) %>% 
+  bake(ames_train) %>% 
+  count(Overall_Qual)
 
+# Alternatives
 
 
 
