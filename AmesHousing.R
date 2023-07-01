@@ -166,5 +166,6 @@ ames_recipe %>%
 vis_miss(ames_recipe, cluster = TRUE)
 
 
-# Feature filtering
+# Feature filtering to speed up training time
+
 
