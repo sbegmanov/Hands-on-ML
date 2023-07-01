@@ -244,7 +244,8 @@ recipe(Sale_Price ~ ., data = ames_train) %>%
   bake(ames_train) %>% 
   count(Overall_Qual)
 
-# Alternatives
+# Dimension reduction
+
 
 
 
