@@ -5,6 +5,7 @@
 # – objective: use property attributes to predict the sale price of a home
 # – access: provided by the AmesHousing package (Kuhn, 2017a)
 # – more details: See ?AmesHousing::ames_raw
+
 library(tidyverse)
 library(AmesHousing)
 library(h2o)
@@ -55,11 +56,11 @@ glm_glm <- glm(Sale_Price ~ ., data = ames, family = gaussian)
 # meta engine (aggregator)
 lm_caret <- train(Sale_Price ~ ., data = ames, method = "lm")
 
-# resampling using h2o
+# resampling using h2o just sample
 h2o.cv <- h2o.glm(x = x, y = y,
                   training_frame = ames.h2o,
                   nfolds = 10)
-
+# V-fold cross-validation randomly splitting using rsample
 vfold_cv(ames, v = 10)
 
 # resampling using bootstraps
@@ -73,11 +74,11 @@ ames_test <- testing(split)
 
 
 # k-nearest neighbor regressor application
-# To so
-# 1. Resampling method: we use 10-fold CV repeated 5 times.
-# 2. Grid search: we specify the hyperparameter values to assess (𝑘 = 2, 4, 6, … , 25).
-# 3. Model training & Validation: we train a k-nearest neighbor (method = ”knn”) 
-# model using our pre-specified resampling procedure (trControl = cv), 
+# To do so
+# 1. Resampling method: use 10-fold CV repeated 5 times.
+# 2. Grid search: specify the hyperparameter values to assess (𝑘 = 2, 4, 6, … , 25).
+# 3. Model training & Validation: train a k-nearest neighbor (method = ”knn”) 
+# model using the pre-specified resampling procedure (trControl = cv), 
 # grid search (tuneGrid = hyper_grid), and preferred loss 
 # function (metric = ”RMSE”).
 
@@ -163,9 +164,185 @@ ames_recipe %>%
 ames_recipe %>% 
   step_impute_bag(all_predictors())
 
-vis_miss(ames_recipe, cluster = TRUE)
-
 
 # Feature filtering to speed up training time
+# zero and near-zero variables - single unique value with no useful info to a model
+# fraction of unique values =<10%
+# ratio of freq. of the most prevalent value to the 2nd freq. of the 2nd most prevalent
+# value => 20%
+
+caret::nearZeroVar(ames_train, saveMetrics = TRUE) %>% 
+  rownames_to_column() %>% 
+  filter(nzv)
+
+# Numeric feature engineering
+# skewness: when normalizing, use Box-Cox when feature values - strictly positive
+# use Yeo-Johnson when feature values - not strictly positive
+
+# normalize all numeric columns
+recipe(Sale_Price ~ ., data = ames_train) %>% 
+  step_YeoJohnson(all_numeric())
+
+# standardization
+# centering and scaling - numeric variables have zero mean and unit variance
+# better standardize within recipe blueprint so that both training and test data
+# standardization are based on the same mean and variance
+
+ames_recipe %>% 
+  step_center(all_numeric(), -all_outcomes()) %>% 
+  step_scale(all_numeric(), -all_outcomes())
+
+
+# categorical feature engineering
+# Lumping
+# contains levels that have very few observations
+count(ames_train, Neighborhood) %>% arrange(n)
+
+count(ames_train, Screen_Porch) %>% arrange(n)
+
+# lump levels for two features
+lumping <- recipe(Sale_Price ~ ., data = ames_train) %>% 
+  step_other(Neighborhood, threshold = 0.01, other = "other") %>% 
+  step_other(Screen_Porch, threshold = 0.01, other = ">0")
+
+apply_2_training <- prep(lumping, training = ames_train) %>% 
+  bake(ames_train)
+
+# New distributions
+count(apply_2_training, Neighborhood) %>% arrange(n)
+count(apply_2_training, Screen_Porch) %>% arrange(n)
+
+# one-hot and dummy encoding
+# lump levels for two features, it creates perfect collinearity which bad for prediction
+recipe(Sale_Price ~ ., data = ames_train) %>% 
+  step_dummy(all_nominal(), one_hot = TRUE)
+
+# label encoding
+# Original categories
+count(ames_train, MS_SubClass)
+# Label encoded
+recipe(Sale_Price ~ ., data = ames_train) %>% 
+  step_integer(MS_SubClass) %>% 
+  prep(ames_train) %>% 
+  bake(ames_train) %>% 
+  count(MS_SubClass)
+
+# be careful with unordered categorical features
+# ordinal encoding is Ames housing
+
+ames_train %>% select(contains("Qual"))
+
+# ordered factors check
+count(ames_train, Overall_Qual)
+
+# Label encoded
+recipe(Sale_Price ~ ., data = ames_train) %>% 
+  step_integer(Overall_Qual) %>% 
+  prep(ames_train) %>% 
+  bake(ames_train) %>% 
+  count(Overall_Qual)
+
+# Dimension reduction
+# PCA and retain components explaining,say 95% of the variance
+recipe(Sale_Price ~ ., data = ames_train) %>% 
+  step_center(all_numeric()) %>% 
+  step_scale(all_numeric()) %>% 
+  step_pca(all_numeric(), threshold = .95)
+
+# Proper implementation
+# potential steps
+# 1. Filter out zero or near-zero variance features.
+# 2. Perform imputation if required.
+# 3. Normalize to resolve numeric feature skewness.
+# 4. Standardize (center and scale) numeric features.
+# 5. Perform dimension reduction (e.g., PCA) on numeric features.
+# 6. One-hot or dummy encode categorical features.
+
+
+#three main steps in creating and applying feature engineering with recipes:
+# 1. recipe: where you define your feature engineering steps to create your blueprint.
+# 2. prepare: estimate feature engineering parameters based on training data.
+# 3. bake: apply the blueprint to new data.
+
+# the following defines Sale_Price as the target variable and then uses all .
+# the remaining columns as features based on ames_train.
+# 1. Remove near-zero variance features that are categorical (aka nominal).
+# 2. Ordinal encode our quality-based features (which are inherently ordinal).
+# 3. Center and scale (i.e., standardize) all numeric features.
+# 4. Perform dimension reduction by applying PCA to all numeric features.
+
+blueprint <- recipe(Sale_Price ~ ., data = ames_train) %>% 
+  step_nzv(all_nominal()) %>% 
+  step_integer(matches("Qual|Cond|QC|Qu")) %>% 
+  step_center(all_numeric(), -all_outcomes()) %>% 
+  step_scale(all_numeric(), -all_outcomes()) %>% 
+  step_pca(all_numeric(), -all_outcomes())
+blueprint
+
+# train this blueprint on some training data
+prepare <- prep(blueprint, training = ames_train)
+prepare
+
+# apply the blueprint to new data
+baked_train <- bake(prepare, new_data = ames_train)
+baked_test <- bake(prepare, new_data = ames_train)
+baked_train
+
+# caret package simplifies this process
+# 1. Filter out near-zero variance features for categorical features.
+# 2. Ordinally encode all quality features, which are on a 1–10 Likert scale.
+# 3. Standardize (center and scale) all numeric features.
+# 4. One-hot encode our remaining categorical features.
+
+blueprint <- recipe(Sale_Price ~ ., data = ames_train) %>% 
+  step_nzv(all_nominal()) %>% 
+  step_integer(matches("Qual|Cond|QC|Qu")) %>% 
+  step_center(all_numeric(), -all_outcomes()) %>% 
+  step_scale(all_numeric(), -all_outcomes()) %>% 
+  step_dummy(all_nominal(), -all_outcomes(), one_hot = TRUE)
+
+# resampling method and hyperparameter search grid
+# specify resampling plan
+cv <- trainControl(
+  method = "repeatedcv",
+  number = 10,
+  repeats = 5
+)
+
+# construct grid of hyperparameter values
+hyper_grid <- expand.grid(k = seq(2, 25, by = 1))
+
+# tune a knn model using grid search
+knn_fit2 <- train(
+  blueprint,
+  data = ames_train,
+  method = "knn",
+  trControl = cv,
+  tuneGrid = hyper_grid,
+  metric = "RMSE"
+)
+
+# print model results
+knn_fit2
+
+# plot cross validation results
+ggplot(knn_fit2)
+
+# supeverised learning
+# linear regression
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
