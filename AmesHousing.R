@@ -259,7 +259,7 @@ recipe(Sale_Price ~ ., data = ames_train) %>%
 # 6. One-hot or dummy encode categorical features.
 
 
-#three main steps in creating and applying feature engineering with recipes:
+# three main steps in creating and applying feature engineering with recipes:
 # 1. recipe: where you define your feature engineering steps to create your blueprint.
 # 2. prepare: estimate feature engineering parameters based on training data.
 # 3. bake: apply the blueprint to new data.
@@ -285,7 +285,7 @@ prepare
 
 # apply the blueprint to new data
 baked_train <- bake(prepare, new_data = ames_train)
-baked_test <- bake(prepare, new_data = ames_train)
+baked_test <- bake(prepare, new_data = ames_test)
 baked_train
 
 # caret package simplifies this process
@@ -329,13 +329,14 @@ knn_fit2
 ggplot(knn_fit2)
 
 # supeverised learning
-# linear regression
+# linear relationship between total above ground living space and sale price
+model1 <- lm(Sale_Price ~ Gr_Liv_Area, data = ames_train)
+summary(model1)
 
-
-
-
-
-
+#RMSE
+sigma(model1)
+# MSE
+sigma(model1)^2
 
 
 
