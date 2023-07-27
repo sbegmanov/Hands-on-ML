@@ -328,17 +328,219 @@ knn_fit2
 # plot cross validation results
 ggplot(knn_fit2)
 
-# supeverised learning
+# supervised learning
 # linear relationship between total above ground living space and sale price
+# OLS regression model
 model1 <- lm(Sale_Price ~ Gr_Liv_Area, data = ames_train)
 summary(model1)
 
-#RMSE
+# coefficients to extract
+coef(model1)
+#RMSE = Residual standard error in summary()
 sigma(model1)
 # MSE
 sigma(model1)^2
 
+# CI for each coefficient
+confint(model1, level = 0.95)
 
+# Multiple linear regression
+model2 <- lm(Sale_Price ~ Gr_Liv_Area + Year_Built,
+             data = ames_train)
+# + or - used to add or remove terms from the original model
+model2 <- update(model1, . ~ . + Year_Built)
+summary(model2)
+
+# library(lm.beta)
+# lm.beta(model2)
+beta_values <- coef(model2)
+beta_values[2] # beta_1
+beta_values[3] # beta_2
+
+# : operator to include an interaction (* could be used )
+lm(Sale_Price ~ Gr_Liv_Area + Year_Built + Gr_Liv_Area:Year_Built, 
+   data = ames_train)
+
+# include all possible main effects
+model3 <- lm(Sale_Price ~ ., data = ames_train)
+# print estimated coefficients in a tidy df
+broom::tidy(model3)
+
+# assessing model accuracy
+# train model using 10-fold cross-validation
+set.seed(123)
+cv_model1 <- train(
+  form = Sale_Price ~ Gr_Liv_Area,
+  data = ames_train,
+  method = "lm",
+  trControl = trainControl(method = "cv", number = 10)
+)
+print(cv_model1)
+
+# model 2 CV
+set.seed(123)
+cv_model2 <- train(
+  Sale_Price ~ Gr_Liv_Area + Year_Built,
+  data = ames_train,
+  method = "lm",
+  trControl = trainControl(method = "cv", number = 10)
+)
+print(cv_model2)
+
+### model 3 CV
+set.seed(123)
+cv_model3 <- train(
+  Sale_Price ~ .,
+  data = ames_train,
+  method = "lm",
+  trControl = trainControl(method = "cv", number = 10)
+)
+
+# Extract out of sample performance measures
+summary(resamples(list(
+  model1 = cv_model1,
+  model2 = cv_model2,
+  model3 = cv_model3
+)))
+
+### model concerns
+# linear relationship
+
+p1 <- ggplot(ames_train, aes(Year_Built, Sale_Price)) +
+  geom_point(size = 1, alpha = .4) +
+  geom_smooth(se = FALSE) +
+  scale_y_continuous("Sale price", labels = scales::dollar) +
+  xlab("Year built") +
+  ggtitle(paste("Non-transformed variables with a\n",
+                "non-linear relationship."))
+p2 <- ggplot(ames_train, aes(Year_Built, Sale_Price)) +
+  geom_point(size = 1, alpha = .4) +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_y_log10("Sale price", labels = scales::dollar,
+                breaks = seq(0, 400000, by = 100000)) +
+  xlab("Year built") +
+  ggtitle(paste("Transforming variables can provide a\n",
+                "near-linear relationship"))
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+
+# Constant variance among residuals
+# variance among error terms are constant(homoscedasticity)
+df1 <- broom::augment(cv_model1$finalModel, data = ames_train)
+
+p1 <- ggplot(df1, aes(.fitted, .std.resid)) +
+  geom_point(size = 1, alpha = .4) +
+  xlab("Predicted values") +
+  ylab("Residuals") +
+  ggtitle("Model 1", subtitle = "Sale_Price ~ Gr_Liv_Area")
+
+df2 <- broom::augment(cv_model3$finalModel, data = ames_train)
+
+p2 <- ggplot(df2, aes(.fitted, .std.resid)) +
+  geom_point(size = 1, alpha = .4) +
+  xlab("Predicted values") +
+  ylab("Residuals") +
+  ggtitle("Model 3", subtitle = "Sale_Price ~ .")
+
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+
+# No autocorrelation
+# the errors are independent and uncorrelated
+
+df1 <- mutate(df1, id = row_number())
+df2 <- mutate(df2, id = row_number())
+
+p1 <- ggplot(df1, aes(id, .std.resid)) +
+  geom_point(size = 1, alpha = .4) +
+  xlab("Row ID") +
+  ylab("Residuals") +
+  ggtitle("Model 1", subtitle = "Correlated residuals.")
+
+p2 <- ggplot(df2, aes(id, .std.resid)) +
+  geom_point(size = 1, alpha = .4) +
+  xlab("Row ID") +
+  ylab("Residuals") +
+  ggtitle("Model 3", subtitle = "Uncorrelated residuals.")
+
+
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+
+# More observations than predictors
+# the number of features exceeds the number of observations (p > n)
+# one can remove variables one-at-a-time until p < n
+
+# No or little multicollinearity
+# collinearity can cause predictor variables to appear as
+# statistically insignificant when in fact they are significant.
+
+# fit with two strongly correlated variables
+summary(cv_model3) %>% 
+  broom::tidy() %>% 
+  filter(term %in% c("Garage_Area", "Garage_Cars"))
+
+# model without Garage_Area
+set.seed(123)
+mod_wo_Garage_Cars <- train(
+  Sale_Price ~ .,
+  data = select(ames_train, -Garage_Cars),
+  method = "lm",
+  trControl = trainControl(method = "cv", number = 10)
+)
+
+summary(mod_wo_Garage_Cars) %>% 
+  broom::tidy() %>% 
+  filter(term == "Garage_Area")
+
+### Principal component regression
+# represents correlated variables with a
+# smaller number of uncorrelated features(principle components)
+
+# perform 10-fold cv on a PCR model tuning the 
+# number of principal components to use as predictors from 1-20
+set.seed(123)
+cv_model_pcr <- train(
+  Sale_Price ~ .,
+  data = ames_train,
+  method = "pcr",
+  trControl = trainControl(method = "cv", number = 10),
+  preProcess = c("zv", "center", "scale"),
+  tuneLength = 20
+)
+
+# model with lowest RMSE
+cv_model_pcr$bestTune
+
+
+# plot cv RMSE
+ggplot(cv_model_pcr)
+
+
+# alternative way to redude the impact of multicollinearity is
+# partial least squres(PLS)
+# PLS finds components that simultaneously summarize variation of the predictors
+# while being optimally correlated with the outcome and then uses those PCs 
+# as predictors.
+
+# perform 10-fold cross validation on a PLS model tuning the
+# number of principal components to use as predictors from 1-20
+set.seed(123)
+cv_model_pls <- train(
+  Sale_Price ~ .,
+  data = ames_train,
+  method = "pls",
+  trControl = trainControl(method = "cv", number = 10),
+  preProcess = c("zv", "center", "scale"),
+  tuneLength = 20
+)
+
+# model with lowest RMSE
+cv_model_pls$bestTune
+
+# plot cv RMSE
+ggplot(cv_model_pls)
+
+### Feature interpretation
+library(vip)
+vip(cv_model_pls, number_features = 20, method = "model")
 
 
 
