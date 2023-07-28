@@ -42,6 +42,7 @@ table(test_strat$Attrition) %>%
   prop.table()
 
 
+### Logistic Regression
 
 
 

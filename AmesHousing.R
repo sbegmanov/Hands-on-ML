@@ -328,7 +328,7 @@ knn_fit2
 # plot cross validation results
 ggplot(knn_fit2)
 
-# supervised learning
+### supervised learning
 # linear relationship between total above ground living space and sale price
 # OLS regression model
 model1 <- lm(Sale_Price ~ Gr_Liv_Area, data = ames_train)
@@ -541,6 +541,42 @@ ggplot(cv_model_pls)
 ### Feature interpretation
 library(vip)
 vip(cv_model_pls, number_features = 20, method = "model")
+
+
+# partial dependence plots(PDF)
+library(pdp)
+partial(cv_model_pls, "Gr_Liv_Area", grid.resolution = 20, plot = TRUE)
+
+
+### Logistic Regression
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
