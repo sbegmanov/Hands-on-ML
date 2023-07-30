@@ -548,8 +548,11 @@ library(pdp)
 partial(cv_model_pls, "Gr_Liv_Area", grid.resolution = 20, plot = TRUE)
 
 
-### Logistic Regression
-
+# ridge penalty - good for handling correlated features, retains all features
+# lasso penalty - perform feature selection, when two strongly correlated features
+#are pushed towards zero
+#elastic net - enables effective regularization via the ridge penalty with
+#feature selection characteristics of the lasso
 
 
 
