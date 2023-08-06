@@ -159,7 +159,105 @@ legend(0.8, 0.2, legend = c("cv_model1", "cv_model3"),
 # perform 10-fold CV on a PLS tuning the number of PCs to
 # use as predictors
 set.seed(123)
-cv_model_pls
+cv_model_pls <- train(
+  Attrition ~ .,
+  data = churn_train,
+  method = "pls",
+  family = "binomial",
+  trControl = trainControl(method = "cv", number = 10),
+  preProcess = c("zv", "center", "scale"),
+  tuneLength = 16
+)
+# model with lowest RMSE
+cv_model_pls$bestTune
+
+# plot cv RMSE
+ggplot(cv_model_pls)
+
+# model concerns
+# feature interpretation
+
+library(vip)
+vip(cv_model3, num_features = 20)
+
+
+# # partial dependence plots(PDF)
+# library(pdp)
+# partial(cv_model_pls, "OverTime", grid.resolution = 20, plot = TRUE)
+# partial(cv_model_pls, "NumCompaniesWorked", grid.resolution = 20, plot = TRUE)
+
+
+# attrition data additional 0.8% improvement in accuracy
+df <- attrition %>% 
+  mutate_if(is.ordered, factor, ordered = FALSE)
+
+set.seed(123)
+churn_split <- initial_split(df, prop = 0.7, strata = "Attrition")
+train <- training(churn_split)
+test <- testing(churn_split)
+
+# train logistic regression model
+set.seed(123)
+glm_mod <- train(
+  Attrition ~ .,
+  data = train,
+  method = "glm",
+  family = "binomial",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10)
+)
+
+# train regulized logistic regression model
+set.seed(123)
+penalized_mod <- train(
+  Attrition ~ .,
+  data = train,
+  method = "glmnet",
+  family = "binomial",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10
+)
+
+# extract out of sample performance measures
+summary(resamples(list(
+  logistic_model = glm_mod,
+  penalized_model = penalized_mod
+)))$statistics$Accuracy
+
+
+## MARS model
+df <- attrition %>% 
+  mutate_if(is.ordered, factor, ordered = FALSE)
+
+set.seed(123)
+churn_split <- initial_split(df, prop = 0.7, strata = "Attrition")
+churn_train <- training(churn_split)
+churn_test <- testing(churn_split)
+
+
+# create a tuning grid
+hyper_grid <- expand.grid(
+  degree = 1:3,
+  nprune = seq(2, 100, length.out = 10) %>% floor()
+)
+
+set.seed(123)
+# cross validated model
+tuned_mars <- train(
+  x = subset(churn_train, select = -Attrition),
+  y = churn_train$Attrition,
+  method = "earth",
+  trControl = trainControl(method = "cv", number = 10),
+  tuneGrid = hyper_grid
+)
+
+# best model
+tuned_mars$bestTune
+
+# plot results
+ggplot(tuned_mars)
+
 
 
 

@@ -555,11 +555,232 @@ partial(cv_model_pls, "Gr_Liv_Area", grid.resolution = 20, plot = TRUE)
 #feature selection characteristics of the lasso
 
 
+X <- model.matrix(Sale_Price ~ ., ames_train)[, -1]
+Y <- log(ames_train$Sale_Price)
+
+# regularized model
+library(glmnet)
+
+# ridge regression to attrition data
+ridge <- glmnet(
+  x = X,
+  y = Y,
+  alpha = 0
+)
+plot(ridge, xvar = "lambda")
+coef(ridge)
+ridge$lambda
+
+# lambdas applied to penalty parameter
+ridge$lambda %>% 
+  head()
 
 
+colnames(coef(ridge))
+
+# small lambda results in large coefficients
+coef(ridge)[c("Latitude", "Overall_QualVery_Excellent"), 100]
+
+# large lambda results in small coefficients
+coef(ridge)[c("Latitude", "Overall_QualVery_Excellent"), 1]
+
+# Tuning
+# alpha is a tuning parameter to control the model
+# k-fold CV optimizes alpha value
+
+# CV ridge regression
+ridge <- cv.glmnet(
+  x = X,
+  y = Y,
+  alpha = 0
+)
+
+# CV lasso regression
+lasso <- cv.glmnet(
+  x = X,
+  y = Y,
+  alpha = 1
+)
+
+# plot results
+par(mfrow = c(1, 2))
+plot(ridge, main = "Ridge penalty\n\n")
+plot(lasso, main = "Lasso penalty\n\n")
+
+# Ridge model
+# min MSE
+min(ridge$cvm)
+# lambda for this min MSE
+ridge$lambda.min
+
+# 1-SE rule
+ridge$cvm[ridge$lambda == ridge$lambda.1se]
+#lambda for this MSE
+ridge$lambda.1se
+
+# Lasso model
+# min MSE
+min(lasso$cvm)
+# lambda for this MSE
+lasso$lambda.min
+
+# 1-SE rule
+lasso$cvm[lasso$lambda == lasso$lambda.1se]
+# lambda for this MSE
+lasso$lambda.1se
 
 
+# Ridge model
+ridge_min <- glmnet(
+  x = X,
+  y = Y,
+  alpha = 0
+)
 
+# Lasso model
+lasso_min <- glmnet(
+  x = X,
+  y = Y,
+  alpha = 1
+)
+
+par(mfrow = c(1, 2))
+# plot ridge model
+plot(ridge_min, xvar = "lambda", main = "Ridge pentaly\n\n")
+abline(v = log(ridge$lambda.min), col = "red", lty = "dashed")
+abline(v = log(ridge$lambda.1se), col = "blue", lty = "dashed")
+
+# plot lasso model
+plot(lasso_min, xvar = "lambda", main = "Lasso pentaly\n\n")
+abline(v = log(lasso$lambda.min), col = "red", lty = "dashed")
+abline(v = log(lasso$lambda.1se), col = "blue", lty = "dashed")
+
+
+# Any alpha value between 0–1 will perform an elastic net. 
+# When alpha = 0.5 we perform an equal combination of penalties 
+# whereas alpha < 0.5 will have a heavier ridge penalty applied and
+# alpha > 0.5 will have a heavier lasso penalty.
+
+set.seed(123)
+# grid search across
+cv_glmnet <- train(
+  x = X,
+  y = Y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10
+)
+
+# model with lowest RMSE
+cv_glmnet$bestTune
+
+# plot CV RMSE
+ggplot(cv_glmnet)
+
+
+# predict sales price on training data
+pred <- predict(cv_glmnet, X)
+
+# compute RMSE of transformed predicted
+RMSE(exp(pred), exp(Y))
+
+# feature interpretation
+library(vip)
+vip(cv_glmnet, num_features = 20, bar = FALSE)
+
+# Enhanced Adaptive Regression Through Hinges(earth)
+library(earth)
+
+# fit a basic MARS model
+# Generalized CV (GCV)
+mars1 <- earth(
+  Sale_Price ~ .,
+  data = ames_train
+)
+
+print(mars1)
+
+summary(mars1) %>% 
+  .$coefficients %>% 
+  head(10)
+
+plot(mars1)
+
+
+# fit a MARS model
+# assess potential interactions
+
+mars2 <- earth(
+  Sale_Price ~ .,
+  data = ames_train,
+  degree = 2
+)
+
+# check out the first 10 coefficients terms
+summary(mars2) %>% 
+  .$coefficients %>% 
+  head(10)
+
+# create a tuning grid
+hyper_grid <- expand.grid(
+  degree = 1:3,
+  nprune = seq(2, 100, length.out = 10) %>% floor()
+)
+
+head(hyper_grid)
+# cross-validated model
+set.seed(123)
+
+cv_mars <- train(
+  x = subset(ames_train, select = - Sale_Price),
+  y = ames_train$Sale_Price,
+  method = "earth",
+  metric = "RMSE",
+  trControl = trainControl(method = "cv", number = 10),
+  tuneGrid = hyper_grid
+)
+
+# View results
+cv_mars$bestTune
+
+ggplot(cv_mars)
+
+# feature interpretation
+# variable importance plots
+library(vip)
+
+# Generalized CV
+p1 <- vip(cv_mars, num_features = 40, bar = FALSE, value = "gcv") +
+  ggtitle("GCV")
+
+# sums of squres(RSS)
+p2 <- vip(cv_mars, num_features = 40, bar = FALSE, value = "rss") +
+  ggtitle("RSS")
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+
+# extract coefficients, convert to tidy data frame
+# filter for interactions terms
+cv_mars$finalModel %>% 
+  coef() %>% 
+  broom::tidy() %>% 
+  filter(stringr::str_detect(names, "\\*"))
+
+# construct partial dependence plots
+library(pdp)
+p1 <- partial(cv_mars, pred.var = "Gr_Liv_Area") %>% 
+  autoplot()
+p2 <- partial(cv_mars, pred.var = "Year_Built") %>% 
+  autoplot()
+p3 <- partial(cv_mars, pred.var = c("Gr_Liv_Area", "Year_Built"),
+              cull = TRUE) %>% 
+  plot.stepfun(palette = "inferno", contour = TRUE) %>% 
+  ggplotify::as.grob() # convert to grob to plot with cowplot
+
+# display plots in a grid
+top_row <- cowplot::
 
 
 
