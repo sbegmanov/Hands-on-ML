@@ -259,15 +259,32 @@ tuned_mars$bestTune
 ggplot(tuned_mars)
 
 
+### KKN algorithm
+
+attrit <- attrition %>% 
+  mutate_if(is.ordered, factor, ordered = FALSE)
 
 
+set.seed(123)
+churn_split <- initial_split(attrit, prop = 0.7, strata = "Attrition")
 
+churn_train <- training(churn_split)
 
+# MNIST training data
+mnist <- dslabs::read_mnist()
+names(mnist)
 
+# simple example
+two_houses <- ames_train %>% 
+  select(Gr_Liv_Area, Year_Built) %>% 
+  sample_n(2)
+print(two_houses)
 
+# euclidean distance
+dist(two_houses, method = "euclidean")
 
-
-
+# Manhattan distance
+dist(two_houses, method = "manhattan")
 
 
 

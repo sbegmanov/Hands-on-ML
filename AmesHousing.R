@@ -775,14 +775,13 @@ p1 <- partial(cv_mars, pred.var = "Gr_Liv_Area") %>%
 p2 <- partial(cv_mars, pred.var = "Year_Built") %>% 
   autoplot()
 p3 <- partial(cv_mars, pred.var = c("Gr_Liv_Area", "Year_Built"),
-              cull = TRUE) %>% 
-  plot.stepfun(palette = "inferno", contour = TRUE) %>% 
+              chull = TRUE) %>% 
+  plotPartial(palette = "inferno", contour = TRUE) %>% 
   ggplotify::as.grob() # convert to grob to plot with cowplot
 
 # display plots in a grid
-top_row <- cowplot::
-
-
+top_row <- cowplot::plot_grid(p1, p2)
+cowplot::plot_grid(top_row, p3, nrow = 2, rel_heights = c(1, 2))
 
 
 
