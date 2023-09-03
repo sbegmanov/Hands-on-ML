@@ -207,7 +207,7 @@ glm_mod <- train(
   trControl = trainControl(method = "cv", number = 10)
 )
 
-# train regulized logistic regression model
+# train regularized logistic regression model
 set.seed(123)
 penalized_mod <- train(
   Attrition ~ .,
@@ -267,12 +267,9 @@ attrit <- attrition %>%
 
 set.seed(123)
 churn_split <- initial_split(attrit, prop = 0.7, strata = "Attrition")
-
 churn_train <- training(churn_split)
 
-# MNIST training data
-mnist <- dslabs::read_mnist()
-names(mnist)
+
 
 # simple example
 two_houses <- ames_train %>% 
@@ -286,6 +283,56 @@ dist(two_houses, method = "euclidean")
 # Manhattan distance
 dist(two_houses, method = "manhattan")
 
+
+
+# create blueprint
+blueprint <- recipe(Attrition ~ ., data =  churn_train) %>% 
+  step_nzv(all_nominal()) %>% 
+  step_integer(contains("Satisfaction")) %>% 
+  step_integer(WorkLifeBalance) %>% 
+  step_integer(JobInvolvement) %>% 
+  step_dummy(all_nominal(), -all_outcomes(), one_hot = TRUE) %>% 
+  step_center(all_numeric(), -all_outcomes()) %>% 
+  step_scale(all_numeric(), -all_outcomes())
+
+# resampling method
+cv <- trainControl(
+  method = "repeatedcv",
+  number = 10,
+  repeats = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+
+# hyperparameter grid search
+hyper_grid <- expand.grid(
+  k = floor(seq(1, nrow(churn_train)/3, length.out = 20))
+)
+
+# knn model and perform grid search
+knn_grid <- train(
+  blueprint,
+  data = churn_train,
+  method = "knn",
+  trControl = cv,
+  tuneGrid = hyper_grid,
+  metric = "ROC"
+)
+
+ggplot(knn_grid)
+
+
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
 
 
 

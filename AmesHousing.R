@@ -40,6 +40,7 @@ test_2 <- ames[-index_2, ]
 
 ### using rsample package
 library(rsample)
+
 set.seed(123)
 split_1 <- initial_split(ames, prop = 0.7)
 train_3 <- training(split_1)
@@ -782,6 +783,338 @@ p3 <- partial(cv_mars, pred.var = c("Gr_Liv_Area", "Year_Built"),
 # display plots in a grid
 top_row <- cowplot::plot_grid(p1, p2)
 cowplot::plot_grid(top_row, p3, nrow = 2, rel_heights = c(1, 2))
+
+
+### Decision trees
+library(rpart)
+library(rpart.plot)
+
+ames_dt1 <- rpart(
+  formula = Sale_Price ~ .,
+  data = ames_train,
+  method = "anova"
+)
+
+rpart.plot(ames_dt1)
+plotcp(ames_dt1)
+
+ames_dt2 <- rpart(
+  formula = Sale_Price ~ .,
+  data = ames_train,
+  method = "anova",
+  control = list(cp = 0, xval = 10)
+  
+)
+
+plotcp(ames_dt2)
+abline(v = 11, lty = "dashed")
+
+
+# rpart cross validation results
+ames_dt1$cptable
+
+# caret cross validation results
+library(caret)
+
+ames_dt3 <- train(
+  Sale_Price ~ .,
+  data = ames_train,
+  method = "rpart",
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 20
+)
+
+ggplot(ames_dt3)
+
+# feature interpretation
+library(vip)
+vip(ames_dt3, num_features = 40, bar = FALSE)
+
+# construct partial dependence plots
+library(pdp)
+
+p1 <- partial(ames_dt3, pred.var = "Gr_Liv_Area") %>% 
+  autoplot()
+p2 <- partial(ames_dt3, pred.var = "Year_Built") %>% 
+  autoplot()
+p3 <- partial(ames_dt3, pred.var = c("Gr_Liv_Area", "Year_Built")) %>% 
+  plotPartial(levelplot = FALSE, zlab = "yhat", drape = TRUE,
+              colorkey = TRUE, screen = list(z = -20, x = -60))
+# display plots side by side
+gridExtra::grid.arrange(p1, p2, p3, ncol = 3)
+
+
+### bagging
+library(ipred)
+set.seed(123)
+
+# train bagged model
+ames_bag1 <- bagging(
+  formula = Sale_Price ~ .,
+  data = ames_train,
+  nbagg = 100,
+  coob = TRUE,
+  control = rpart.control(minsplit = 2, cp = 0)
+)
+
+ames_bag1
+
+# with caret
+library(caret)
+
+ames_bag2 <- train(
+  Sale_Price ~ .,
+  data = ames_train,
+  method = "treebag",
+  trControl = trainControl(method = "cv", number = 10),
+  nbagg = 200,
+  control = rpart.control(minsplit = 2, cp = 0)
+)
+
+ames_bag2
+
+# parallelize
+# create a parallel socket cluster
+library(parallel)
+library(doParallel)
+require(iterators)
+
+cl <- makeCluster(8)
+registerDoParallel(cl)
+
+# fit trees in parallel and compute predictions on the test set
+predictions <- foreach(
+  icount(160),
+  .packages = "rpart",
+  .combine = cbind
+) %dopar% {
+  # bootstrap copy of training data
+  index <- sample(nrow(ames_train), replace = TRUE)
+  ames_train_boot <- ames_train[index, ]
+  
+  # fit tree to bootstrap copy
+  bagged_tree <- rpart(
+    Sale_Price ~ .,
+    control = rpart.control(minsplit = 2, cp = 0),
+    data = ames_train_boot
+  )
+  predict(bagged_tree, newdata = ames_test)
+}
+
+predictions[1:5, 1:7]
+
+# plot
+predictions %>% 
+  as.data.frame() %>% 
+  mutate(
+    observation = 1:n(),
+    actual = ames_test$Sale_Price
+  ) %>% 
+  tidyr::gather(tree, predicted, -c(observation, actual)) %>% 
+  group_by(observation) %>% 
+  mutate(tree = stringr::str_extract(tree, '\\d+') %>% 
+  as.numeric()) %>% 
+  ungroup() %>% 
+  arrange(observation, tree) %>% 
+  group_by(observation) %>% 
+  mutate(avg_prediction = cummean(predicted)) %>% 
+  group_by(tree) %>% 
+  summarize(RMSE = RMSE(avg_prediction, actual)) %>% 
+  ggplot(aes(tree, RMSE)) +
+  geom_line() +
+  xlab('Number of trees')
+
+# shutdown parallel cluster
+stopCluster(cl)
+
+vip::vip(ames_bag2, num_features = 40, bar = FALSE)
+
+### random forest
+library(ranger)
+
+# number of features
+n_features <- length(setdiff(names(ames_train), "Sale_Price"))
+
+# train a default random forest model
+ames_rf1 <- ranger(
+  Sale_Price ~ .,
+  data = ames_train,
+  mtry = floor(n_features / 3),
+  respect.unordered.factors = "order",
+  seed = 123
+)
+
+# get OOB RMSE
+(default_rmse <- sqrt(ames_rf1$prediction.error))
+
+# hyperparameter grid
+
+hyper_grid <- expand.grid(
+  mtry = floor(n_features * c(.05, .15, .25, .333, .4)),
+  min.node.size = c(1, 3, 5, 10),
+  replace = c(TRUE, FALSE),
+  sample.fraction = c(.5, .63, .8),
+  rmse = NA
+)
+
+# execute full Cartesian grid search
+for(i in seq_len(nrow(hyper_grid))) {
+  # fit model for i'th hyperparameter combination
+  fit <- ranger(
+    formula = Sale_Price ~ .,
+    data = ames_train,
+    num.trees = n_features * 10,
+    mtry = hyper_grid$mtry[i],
+    min.node.size = hyper_grid$min.node.size[i],
+    replace = hyper_grid$replace[i],
+    sample.fraction = hyper_grid$sample.fraction[i],
+    verbose = FALSE,
+    seed = 123,
+    respect.unordered.factors = 'order'
+  )
+  # export OOB error
+  hyper_grid$rmse[i] <- sqrt(fit$prediction.error)
+}
+
+# top 10 models
+hyper_grid %>% 
+  arrange(rmse) %>% 
+  mutate(perc_gain = (default_rmse - rmse) / default_rmse * 100) %>% 
+  head(10)
+
+h2o.no_progress()
+h2o.init(max_mem_size = "5g")
+
+
+# convert training data to h20 object
+train_h2o <- as.h2o(ames_train)
+
+# set the response column to Sale_Price
+response <- "Sale_Price"
+
+# set the predictor names
+predictors <- setdiff(colnames(ames_train), response)
+
+# similar to baseline ranger
+h2o_rf1 <- h2o.randomForest(
+  x = predictors,
+  y = response,
+  training_frame = train_h2o,
+  ntrees = n_features * 10,
+  seed = 123
+)
+
+h2o_rf1
+
+
+# 240 hyperparameter combinations
+# hyperparameter grid
+hyper_grid <- list(
+  mtries = floor(n_features * c(.05, .15, .25, .3333, .4)),
+  min_rows = c(1, 3, 5, 10),
+  max_depth = c(10, 20, 30),
+  sample_rate = c(.55, .632, .70, .80)
+)
+
+# random grid search strategy
+search_criteria <- list(
+  strategy = "RandomDiscrete",
+  stopping_metric = "mse",
+  stopping_tolerance = 0.001,  # stop if improvement is < 0.1%
+  stopping_rounds = 10,       # over the last 10 models
+  max_runtime_secs = 60 * 5   # or stop search after 5 min
+)
+
+# perform grid search
+random_grid <- h2o.grid(
+  algorithm = "randomForest",
+  grid_id = "rf_random_grid",
+  x = predictors,
+  y = response,
+  training_frame = train_h2o,
+  hyper_params = hyper_grid,
+  ntrees = n_features * 10,
+  seed = 123,
+  stopping_metric = "RMSE",
+  stopping_rounds = 10,           # stop if last 100 trees added
+  stopping_tolerance = 0.005,     # don't improve RMSE by 0.5%
+  search_criteria = search_criteria
+)
+
+
+# collect the results and start by our model performance metric
+# of choice
+
+random_grid_perf <- h2o.getGrid(
+  grid_id = "rf_random_grid",
+  sort_by = "mse",
+  decreasing = FALSE
+)
+
+random_grid_perf
+
+
+# after identification optimal parameter values from the grid search
+rf_impurity <- ranger(
+  formula = Sale_Price ~ .,
+  data = ames_train,
+  num.trees = 2000,
+  mtry = 32,
+  min.node.size = 1,
+  sample.fraction = .80,
+  replace = FALSE,
+  importance = "impurity",
+  respect.unordered.factors = "order",
+  verbose = FALSE,
+  seed = 123
+)
+
+# re-run model with permutation-based variable importance
+rf_permutation <- ranger(
+  formula = Sale_Price ~ .,
+  data = ames_train,
+  num.trees = 2000,
+  mtry = 32,
+  min.node.size = 1,
+  sample.fraction = .80,
+  replace = FALSE,
+  importance = "permutation",
+  respect.unordered.factors = "order",
+  verbose = FALSE,
+  seed = 123
+)
+
+p1 <- vip::vip(rf_impurity, num_features = 25, bar = FALSE)
+p2 <- vip::vip(rf_permutation, num_features = 25, bar = FALSE)
+
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+
+### GBM model
+# run a basic GBM model
+library(gbm)
+
+set.seed(123)
+ames_gbm1 <- gbm(
+  formula = Sale_Price ~ .,
+  data = ames_train,
+  distribution = "gaussian", # SSE loss function
+  n.trees = 5000,
+  shrinkage = 0.1, 
+  interaction.depth = 3,
+  n.minobsinnode = 10,
+  cv.folds = 10
+)
+
+# find index for number trees with minimum CV error
+best <- which.min(ames_gbm1$cv.error)
+
+# get MSE and compute RMSE
+sqrt(ames_gbm1$cv.error[best])
+
+# plot error plot curve
+gbm.perf(ames_gbm1, method = "cv")
+
+
 
 
 
