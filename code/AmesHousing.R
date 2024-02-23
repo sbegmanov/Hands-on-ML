@@ -1352,6 +1352,538 @@ xgb.fit.final <- xgboost(
   verbose = 0
 )
 
+### stacked models
+
+library(rsample)
+
+set.seed(123)
+split <- initial_split(ames, strata = "Sale_Price")
+ames_train <- training(split)
+ames_test <- testing(split)
+
+# consistent categorical levels
+library(recipes)
+
+blueprint <- recipe(Sale_Price ~ ., data = ames_train) %>% 
+  step_other(all_nominal(), threshold = 0.005)
+
+# training and test for h2o
+library(h2o)
+
+h2o.init()
+
+train_h2o <- prep(blueprint, training = ames_train, retain = TRUE) %>% 
+  juice() %>% 
+  as.h2o()
+test_h2o <- prep(blueprint, training = ames_train) %>% 
+  bake(new_data = ames_test) %>% 
+  as.h2o()
+
+# response and feature
+Y <- "Sale_Price"
+X <- setdiff(names(ames_train), Y)
+
+
+# train and cross validate a GLM model
+best_glm <- h2o.glm(
+  x = X, y = Y, training_frame = train_h2o, alpha = 0.1,
+  remove_collinear_columns = TRUE, 
+  nfolds = 10,
+  fold_assignment = "Modulo", # same observations
+  keep_cross_validation_predictions = TRUE,
+  seed = 123
+)
+
+# train and cross validate a RF model
+best_rf <- h2o.randomForest(
+  x = X, y = Y, training_frame = train_h2o, ntrees = 1000,
+  mtries = 20, max_depth = 30, min_rows = 1, sample_rate = 0.8,
+  nfolds = 10, 
+  fold_assignment = "Modulo",
+  keep_cross_validation_predictions = TRUE, 
+  seed = 123,
+  stopping_rounds = 50, 
+  stopping_metric = "RMSE",
+  stopping_tolerance = 0
+)
+
+# train and cross validate a GBM model
+best_gbm <- h2o.gbm(
+  x = X, y = Y, training_frame = train_h2o, ntrees = 5000,
+  learn_rate = 0.01, max_depth = 7, min_rows = 5, sample_rate = 0.8,
+  nfolds = 10,
+  fold_assignment = "Modulo",
+  keep_cross_validation_predictions = TRUE,
+  seed = 123,
+  stopping_rounds = 50,
+  stopping_metric = "RMSE",
+  stopping_tolerance = 0
+)
+
+# train and cross validate an XGBoost model
+best_xgb <- h2o.xgboost(
+  x = X, y = Y, training_frame = train_h2o, ntrees = 5000,
+  learn_rate = 0.05, max_depth = 3, min_rows = 3, sample_rate = 0.8,
+  categorical_encoding = "Enum",
+  nfolds = 10,
+  fold_assignment = "Modulo",
+  keep_cross_validation_predictions = TRUE,
+  seed = 123,
+  stopping_rounds = 50,
+  stopping_metric = "RMSE",
+  stopping_tolerance = 0
+)
+
+# train a stacked ensemble
+ensemble_tree <- h2o.stackedEnsemble(
+  x = X, y = Y, training_frame = train_h2o,
+  model_id = "my_tree_ensemble",
+  base_models = list(best_glm, best_rf, best_gbm, best_xgb),
+  metalearner_algorithm = "drf"
+)
+
+# results from base learners
+get_rmse <- function(model) {
+  results <- h2o.performance(model, newdata = test_h2o)
+  results@metrics$RMSE
+}
+
+list(best_glm, best_rf, best_gbm, best_xgb) %>% 
+  purrr::map_dbl(get_rmse)
+
+
+# stacked results
+h2o.performance(ensemble_tree, newdata = test_h2o)@metrics$RMSE
+
+
+# all base learners show a high correlation
+# stacking in this case provides less advantage
+
+glm_id <- best_glm@model$cross_validation_holdout_predictions_frame_id
+rf_id <- best_rf@model$cross_validation_holdout_predictions_frame_id
+gbm_id <- best_gbm@model$cross_validation_holdout_predictions_frame_id
+xgb_id <- best_xgb@model$cross_validation_holdout_predictions_frame_id
+data.frame(
+  GLM_pred = as.vector(h2o.getFrame(glm_id$name)),
+  RF_pred = as.vector(h2o.getFrame(rf_id$name)),
+  GBM_pred = as.vector(h2o.getFrame(gbm_id$name)),
+  XGB_pred = as.vector(h2o.getFrame(xgb_id$name))
+) %>% cor()
+
+
+# stacking a grid search
+# GBM hyperparameter grid
+
+hyper_grid <- list(
+  max_depth = c(1, 3, 5),
+  min_rows = c(1, 5, 10),
+  learn_rate = c(0.01, 0.05, 0.1),
+  learn_rate_annealing = c(0.99, 1),
+  sample_rate = c(0.5, 0.75, 1),
+  col_sample_rate = c(0.8, 0.9, 1)
+)
+
+# random grid search criteria
+search_criteria <- list(
+  strategy = "RandomDiscrete",
+  max_models = 25
+)
+
+# random grid search
+random_grid <- h2o.grid(
+  algorithm = "gbm", grid_id = "gbm_grid", x = X, y = Y,
+  training_frame = train_h2o, hyper_params = hyper_grid,
+  search_criteria = search_criteria, ntrees = 5000,
+  stopping_metric = "RMSE", stopping_rounds = 10,
+  stopping_tolerance = 0, nfolds = 10, fold_assignment = "Modul",
+  keep_cross_validation_predictions = TRUE, seed = 123
+)
+
+# results by RMSE
+h2o.getGrid(
+  grid_id = "gbm_grid",
+  sort_by = "rmse"
+)
+
+# Grab the model_id for the top model, chosen by validation error
+best_model_id <- random_grid_perf@model_ids[[1]]
+best_model <- h2o.getModel(best_model_id)
+h2o.performance(best_model, newdata = test_h2o)
+
+# Train a stacked ensemble using the GBM grid
+ensemble <- h2o.stackedEnsemble(x = X, y = Y,
+                                training_frame = train_h2o, 
+                                model_id = "ensemble_gbm_grid",
+                                base_models = random_grid@model_ids, 
+                                metalearner_algorithm = "gbm"
+)
+
+# Evaluate ensemble performance on a test set
+h2o.performance(ensemble, newdata = test_h2o)
+
+# AutoML to find a list of candidate 80 models
+auto_ml <- h2o.automl(x = X, y = Y,
+                      training_frame = train_h2o, nfolds = 5,
+                      max_runtime_secs = 60 * 120, max_models = 50,
+                      keep_cross_validation_predictions = TRUE, 
+                      sort_metric = "RMSE",
+                      stopping_rounds = 50, 
+                      stopping_metric = "RMSE",
+                      stopping_tolerance = 0,
+                      seed = 123
+)
+
+# results of top 15 models
+auto_ml@leaderboard %>%
+  as.data.frame() %>%
+  dplyr::select(model_id, rmse) %>%
+  dplyr::slice(1:25)
+
+### interpretable machine learning (IML)
+# local interpretation
+
+# predictions
+predictions <- predict(ensemble_tree, train_h2o) %>% as.vector()
+
+# highest and lowest predicted sales price
+paste("Observation", which.max(predictions),
+      "has a predicted sale price of", scales::dollar(max(predictions)))
+#[1] ”Observation 1825 has a predicted sale price of $663,136”
+
+paste("Observation", which.min(predictions),
+       "has a predicted sale price of", scales::dollar(min(predictions)))
+#[1] ”Observation 139 has a predicted sale price of $47,245.45”
+
+# Grab feature values for observations with min/max predicted sales price
+
+high_ob <- as.data.frame(train_h2o)[which.max(predictions), ] %>%
+  select(-Sale_Price)
+low_ob <- as.data.frame(train_h2o)[which.min(predictions), ] %>%
+  select(-Sale_Price)
+
+# model-specific vs. model-agnostic
+
+# for example, ML algorithms have no natural way of measuring feature importance
+vip(ensemble_tree, method = "model")
+
+
+# modelling agnostic procedures
+
+# 1) data frame with features
+features <- as.data.frame(train_h2o) %>% select(-Sale_Price)
+
+# 2) a vector with the actual responses
+response <- as.data.frame(train_h2o) %>% pull(Sale_Price)
+
+# 3) custom predict function that returns the predicted values as a vector
+pred <- function(object, newdata) {
+  results <- as.vector(h2o.predict(object, as.h2o(newdata)))
+  return(results)
+}
+
+# prediction output
+pred(ensemble_tree, features) %>% head()
+
+library(iml)
+library(DALEX)
+
+# iml model agnostic object
+components_iml <- Predictor$new(
+  model = ensemble_tree,
+  data = features,
+  y = response,
+  predict.fun = pred
+)
+
+# DALEX model agnostic object
+components_dalex <- DALEX::explain(
+  model = ensemble_tree,
+  data = features,
+  y = response,
+  predict_function = pred
+)
+
+### permutation-based feature importance
+library(vip)
+
+vip(
+  ensemble_tree,
+  train = as.data.frame(train_h2o),
+  method = "permute",
+  target = "Sale_Price",
+  metric = "RMSE",
+  nsim = 5,
+  sample_frac = 0.5,
+  pred_wrapper = pred
+)
+
+
+## partial dependence
+library(pdp)
+
+# Custom prediction function wrapper
+pdp_pred <- function(object, newdata) {
+  results <- mean(as.vector(h2o.predict(object, as.h2o(newdata))))
+  return(results)
+}
+
+# Compute partial dependence values
+pd_values <- partial(
+  ensemble_tree,
+  train = as.data.frame(train_h2o),
+  pred.var = "Gr_Liv_Area",
+  pred.fun = pdp_pred,
+  grid.resolution = 20
+)
+
+head(pd_values)
+
+# Partial dependence plot
+autoplot(pd_values, rug = TRUE, train = as.data.frame(train_h2o))
+
+## Individual conditional expectation
+
+# Construct c-ICE curves
+partial(
+  ensemble_tree,
+  train = as.data.frame(train_h2o),
+  pred.var = "Gr_Liv_Area",
+  pred.fun = pred,
+  grid.resolution = 20,
+  plot = TRUE,
+  center = TRUE,
+  plot.engine = "ggplot2"
+)
+
+# feature interactions
+library(iml)
+
+interact <- Interaction$new(components_iml)
+
+interact$results %>%
+  arrange(desc(.interaction)) %>%
+  head()
+
+plot(interact)
+
+# feature of interest
+feat <- "First_Flr_SF"
+interact_2way <- Interaction$new(components_iml, feature = feat)
+interact_2way$results %>%
+  arrange(desc(.interaction)) %>%
+  top_n(10)
+
+# Two-way PDP using iml
+interaction_pdp <- Partial$new(
+  components_iml,
+  c("First_Flr_SF", "Overall_Qual"),
+  ice = FALSE,
+  grid.size = 20
+)
+plot(interaction_pdp)
+
+
+## Local interpretable model-agnostic explanations(LIME)
+library(lime)
+
+# explainer object
+components_lime <- lime(
+  x = features,
+  model = ensemble_tree,
+  n_bins = 10
+)
+
+class(components_lime)
+summary(components_lime)
+
+# Use LIME to explain previously defined instances: high_ob & low_ob
+
+lime_explanation <- lime::explain(
+  x = rbind(high_ob, low_ob),
+  explainer = components_lime,
+  n_permutations = 5000,
+  dist_fun = "gower",
+  kernel_width = 0.25,
+  n_features = 10,
+  feature_select = "highest_weights"
+)
+
+glimpse(lime_explanation)
+plot_features(lime_explanation, ncol = 1)
+
+# Tune the LIME algorithm a bit
+lime_explanation2 <- explain(
+  x = rbind(high_ob, low_ob),
+  explainer = components_lime,
+  n_permutations = 5000,
+  dist_fun = "euclidean",
+  kernel_width = 0.75,
+  n_features = 10,
+  feature_select = "lasso_path"
+)
+
+# results
+plot_features(lime_explanation2, ncol = 1)
+
+## Shapley values
+library(iml)
+
+# Compute (approximate) Shapley values
+(shapley <- Shapley$new(components_iml, x.interest = high_ob,
+                        sample.size = 1000))
+
+# Plot results
+plot(shapley)
+
+
+# Reuse existing object
+shapley$explain(x.interest = low_ob)
+
+# Plot results
+shapley$results %>%
+  top_n(25, wt = abs(phi)) %>%
+  ggplot(aes(phi, reorder(feature.value, phi), color = phi > 0)) +
+  geom_point(show.legend = FALSE)
+
+
+# XGBoost and built-in Shapley values
+
+# Compute tree SHAP for a previously obtained XGBoost model
+X <- readr::read_rds("data/xgb-features.rds")
+xgb.fit.final <- readr::read_rds("data/xgb-fit-final.rds")
+
+
+# Try to re-scale features (low to high)
+feature_values <- X %>%
+  as.data.frame() %>%
+  mutate_all(scale) %>%
+  gather(feature, feature_value) %>%
+  pull(feature_value)
+
+# Compute SHAP values, wrangle a bit, compute SHAP-based
+# importance, etc.
+shap_df <- xgb.fit.final %>%
+  predict(newdata = X, predcontrib = TRUE) %>%
+  as.data.frame() %>%
+  select(-BIAS) %>%
+  gather(feature, shap_value) %>%
+  mutate(feature_value = feature_values) %>%
+  group_by(feature) %>%
+  mutate(shap_importance = mean(abs(shap_value)))
+
+# SHAP contribution plot
+p1 <- ggplot(shap_df,
+             aes(x = shap_value,
+                 y = reorder(feature, shap_importance))) +
+  ggbeeswarm::geom_quasirandom(groupOnX = FALSE, varwidth = TRUE,
+                               size = 0.4, alpha = 0.25) +
+  xlab("SHAP value") +
+  ylab(NULL)
+
+# SHAP importance plot
+p2 <- shap_df %>%
+  select(feature, shap_importance) %>%
+  filter(row_number() == 1) %>%
+  ggplot(aes(x = reorder(feature, shap_importance),
+             y = shap_importance)) +
+  geom_col() +
+  coord_flip() +
+  xlab(NULL) +
+  ylab("mean(|SHAP value|)")
+
+# Combine plots
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+
+shap_df %>%
+  filter(feature %in% c("Overall_Qual", "Gr_Liv_Area")) %>%
+  ggplot(aes(x = feature_value, y = shap_value)) +
+  geom_point(aes(color = shap_value)) +
+  scale_colour_viridis_c(name = "Feature value\n(standardized)",
+                         option = "C") +
+  facet_wrap(~ feature, scales = "free") +
+  scale_y_continuous('Shapley value', labels = scales::comma) +
+  xlab('Normalized feature value')
+
+# Localized step-wise procedure
+# Break Down method, alternative is step down
+library(DALEX)
+
+high_breakdown <- prediction_breakdown(components_dalex,
+                                       observation = high_ob)
+# class of prediction_breakdown output
+class(high_breakdown)
+
+# check out the top 10 influential variables for this observation
+high_breakdown[1:10, 1:5]
+
+plot(high_breakdown)
+
+### k-means clustering with mixed data
+
+# Full ames data set --> recode ordinal variables to numeric
+ames_full <- AmesHousing::make_ames() %>% 
+  mutate_if(str_detect(names(.), 'Qual|Cond|QC|Qu'), as.numeric)
+
+# One-hot encode --> retain only the features and not sale price
+full_rank <- caret::dummyVars(Sale_Price ~ ., data = ames_full,
+                              fullRank = TRUE)
+ames_1hot <- predict(full_rank, ames_full)
+
+# scale data
+ames_1hot_scaled <- scale(ames_1hot)
+
+# new dimensions
+dim(ames_1hot_scaled)
+
+# k-means clustering
+set.seed(123)
+
+fviz_nbclust(
+  ames_1hot_scaled,
+  kmeans,
+  method = "wss", #elbow method
+  k.max = 25,
+  verbose = FALSE
+)
+
+# Gower distance
+library(cluster)
+
+# original data minus Sale_Price
+ames_full <- AmesHousing::make_ames() %>% select(-Sale_Price)
+gower_dst <- daisy(ames_full, metric = "gower")
+
+# Gower distance matrix to several clustering algos
+pam_gower <- pam(x = gower_dst, k = 8, diss = TRUE) 
+diana_gower <- diana(x = gower_dst, diss = TRUE)
+agnes_gower <- agnes(x = gower_dst, diss = TRUE)
+
+# partitioning around medians(PAM)
+fviz_nbclust(
+  ames_1hot_scaled,
+  pam,
+  method = "wss", #elbow method
+  k.max = 25,
+  verbose = FALSE
+)
+
+# for larger data set use clustering large applications(CLARA)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

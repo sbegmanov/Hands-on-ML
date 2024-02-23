@@ -28,6 +28,7 @@ table(churn$Attrition) %>%
 
 # stratified sampling with the rsample package
 library(rsample)
+
 set.seed(123)
 split_strat <- initial_split(churn, prop = 0.7, strata = "Attrition")
 train_strat <- training(split_strat)
@@ -323,12 +324,123 @@ knn_grid <- train(
 ggplot(knn_grid)
 
 
-  
-  
-  
-  
-  
-  
+### Support Vector Machines
+# linear soft margin classifier
+caret::getModelInfo("svmLinear")$svmLinear$parameter
+
+# polynomial kernel
+caret::getModelInfo("svmPoly")$svmPoly$parameter
+
+# radial basis kernel
+caret::getModelInfo("svmRadial")$svmRadial$parameter
+caret::getModelInfo("svmRadialSigma")
+
+library(caret)
+
+# tune an SVM with radial basis kernel
+set.seed(1854)
+churn_svm <- train(
+  Attrition ~ .,
+  data = churn_train,
+  method = "svmRadial",
+  preProcess = c("center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10
+)
+
+# plot results
+ggplot(churn_svm) +
+  theme_light()
+
+churn_svm$results
+
+# class weights
+class.weights = c("No" = 1, "Yes" = 10)
+
+# class probabilities
+# control params for SVM
+
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+  classProbs = TRUE,
+  # also needed for AUC/ROC
+  summaryFunction = twoClassSummary
+)
+
+# tune an SVM
+set.seed(5628)
+churn_svm_auc <- train(
+  Attrition ~ .,
+  data = churn_train,
+  method = "svmRadial",
+  preProcess = c("center", "scale"),
+  metric = "ROC",
+  trControl = ctrl,
+  tuneLength = 10
+)
+
+churn_svm_auc$results
+
+# confusion matrix
+confusionMatrix(churn_svm_auc)
+
+# feature interpretation 
+prob_yes <- function(object, newdata) {
+  predict(object, newdata = newdata, type = "prob")[, "Yes"]
+}
+
+library(vip)
+set.seed(2827)
+
+vip(churn_svm_auc, method = "permute", nsim = 5, train = churn_train,
+    target = "Attrition", metric = "auc", reference_class = "Yes", pred_wrapper = prob_yes)
+
+features <- c("OverTime", "WorkLifeBalance", "JobSatisfaction", "JobRole")
+
+
+library(pdp)
+
+pdps <- lapply(features, 
+               function(x) {
+                 partial(churn_svm_auc, pred.var = x, which.class = 2,
+                         prob = TRUE, plot = TRUE, plot.engine = "ggplot2") +
+                    coord_flip()
+                 })
+
+grid.arrange(grobs = pdps, ncol = 2)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   
   
   
